@@ -1,0 +1,86 @@
+receivers:
+  file_log/nginx_access:
+    include:
+      - ./access.log
+    start_at: end
+    operators:
+      - type: json_parser
+        parse_to: body
+        on_error: drop
+      - type: time_parser
+        parse_from: body.time_local
+        layout: '%d/%b/%Y:%H:%M:%S %z'
+        on_error: drop
+
+processors:
+  transform/nginx_access:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["client.address"], body["remote_addr"])
+          - set(attributes["http.request.method"], body["request_method"])
+          - set(attributes["network.protocol.version"], body["server_protocol"])
+          - set(attributes["http.response.body.size"], Int(body["body_bytes_sent"]))
+          - set(attributes["http.request.referrer"], body["http_referer"])
+          - set(attributes["user_agent.original"], body["http_user_agent"])
+          - set(attributes["url.path"], body["request_uri"])
+          - replace_pattern(attributes["url.path"], "\\?.*$", "")
+          - replace_pattern(attributes["url.path"], "/+$", "") where attributes["url.path"] != "/"
+          - set(attributes["http.response.status_code"], Int(body["status"]))
+          - set(severity_text, "INFO")
+          - set(severity_number, 9)
+          - set(severity_text, "ERROR") where attributes["http.response.status_code"] >= 500
+          - set(severity_number, 17) where attributes["http.response.status_code"] >= 500
+          - truncate_all(attributes, 256)
+  resource/service:
+    attributes:
+      - key: service.name
+        value: nginx-log
+        action: insert
+  batch/metrics_1m:
+    timeout: 60s
+    send_batch_size: 10000
+
+connectors:
+  count/nginx_requests:
+    logs:
+      http.server.request.count:
+        description: Count of nginx access requests by method, normalized path, and status code.
+        attributes:
+          - key: http.request.method
+          - key: url.path
+          - key: http.response.status_code
+
+exporters:
+  debug/logs:
+  debug/metrics:
+  otlp_http/mackerel_log:
+    endpoint: "https://otlp.mackerelio.com:4318"
+    headers:
+      Mackerel-Api-Key: "${env:MACKEREL_APIKEY}"
+    sending_queue:
+      batch:
+        max_size: 3500000
+        sizer: bytes
+  otlp/mackerel_metric:
+    endpoint: "otlp.mackerelio.com:4317"
+    headers:
+      Mackerel-Api-Key: "${env:MACKEREL_APIKEY}"
+
+service:
+  pipelines:
+    logs:
+      receivers:
+        [file_log/nginx_access]
+      processors:
+        [transform/nginx_access, resource/service]
+      exporters:
+        [debug/logs, otlp_http/mackerel_log, count/nginx_requests]
+    metrics:
+      receivers:
+        [count/nginx_requests]
+      processors:
+        [resource/service, batch/metrics_1m]
+      exporters:
+        [debug/metrics, otlp/mackerel_metric]
