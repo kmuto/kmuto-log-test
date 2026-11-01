@@ -41,6 +41,7 @@ processors:
   batch/metrics_1m:
     timeout: 60s
     send_batch_size: 10000
+  delta_to_cumulative:
 
 connectors:
   count/nginx_requests:
@@ -81,6 +82,6 @@ service:
       receivers:
         [count/nginx_requests]
       processors:
-        [resource/service, batch/metrics_1m]
+        [resource/service, delta_to_cumulative, batch/metrics_1m]
       exporters:
         [debug/metrics, otlp/mackerel_metric]
